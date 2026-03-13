@@ -1,0 +1,93 @@
+---
+title: 'Protein expression (kidney): IHC'
+subtitle: 'Portfolio targets'
+date: '`r format(Sys.time(), "%d %B, %Y")`'
+author: "Target Sciences <max.salm@bicycletx.com>"
+format: 
+  html:
+    theme: 
+        light: sandstone
+        dark: darkly
+    toc-title: Contents
+    toc: true
+    toc-depth: 2
+    toc-location: right
+    code-fold: true
+    number-sections: true
+    number-depth: 2
+    highlight-style: pygments
+    smooth-scroll: true
+    link-external-icon: true
+    link-external-newwindow: true    
+    citations-hover: true
+    footnotes-hover: true
+    embed-resources: true    
+bibliography: references.bib
+csl: nature.csl
+citeproc: true
+lightbox: auto
+lang: en-GB
+pagetitle: 'ihc_healthy'
+description-meta: 'Exploratory Data Analysis'
+author-meta: 'm.salm'
+date-meta: '`r format(Sys.time(), "%d %B, %Y")`'
+---
+
+![Department: Therapeutics (Target Sciences)](./IMG/Bicycle_Workmark_RGB_Reg.jpg){width=50% fig-align="left"}
+
+
+
+```{r child = '01b-frontMatter.Rmd'}
+```
+
+# Aim
+
+To identify targets at risk of on-target off-tumour toxicity in kidney by clustering IHC data across targets
+
+# Results
+
+To quantify color profiles in immunohistochemistry data from healthy human kidney tissue samples in the Human Protein Atlas, we retrieved 9422 immunohistochemistry images for 3323 protein targets annotated to the following subcellular locations: plasma membrane, junction, or Focal adhesion sites. After removing the white background (and applying a simple contrast enhancement), we extracted image pixels from each image to produce a multidimensional fixed-bin color histogram for each image [@Weller2019]. To compare color palettes between images, the Earth Mover's distance was calculated between histograms to produce a distance matrix for agglomarative hierarchical clustering. 
+
+For this baseline model, cluster uniformity was compared by ...
+
+For future iteration, use image model...
+
+
+
+
+
+```{r, fig.height=32/2, fig.width=32/2}
+#| label: fig-img_dist
+#| fig.showtext: TRUE
+#| fig-cap-location: bottom
+#| fig-cap: "Heatmap of color distance matrices, clustered by similarity. Colour histograms are extracted from each image (after background removal), and the average histogram estimated for antibody replicates, before estimating the earth mover’s distance between protein targets. Dark blue is more similar, magenta is more dissimilar."
+
+# targets::tar_load(img_dist)
+# colordistance::heatmapColorDistance(img_dist, main="Target similarity by IHC in kidney tissue")
+
+targets::tar_load(ihc_hm)
+ComplexHeatmap::draw(
+	ihc_hm, 
+	heatmap_legend_side = "top", 
+	annotation_legend_side = "top"
+)
+
+
+```
+
+# Methods
+
+## Datahub: Human Protein Atlas
+
+The development version of `HPAanalyze` [@Tran2019] was used to retrieve immunohistochemistry (IHC) images, and granular metadata [@Uhlen2010; @Uhlen2015; @Uhlen2019a; @Uhlen2019; @Uhlen2017; @Karlsson2021; @Sjoestedt2020; @Thul2017; @Yuan2025]. Searches were restricted to healthy kidney tissue (snomed M-00100).
+
+The `colordistance` package [@Weller2019] was used to extract color histograms (3 bins per HSV channel) from IHC data. Color histograms were averaged for antibody replicates. The distance between color profiles was represented as the Earth Mover Distance, so that the final distance reflects the similarity of the clusters in both size and color.
+
+
+
+
+```{r child = '06-footer.Rmd'}
+```
+
+
+

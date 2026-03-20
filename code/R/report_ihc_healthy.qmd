@@ -46,15 +46,27 @@ To identify targets at risk of on-target off-tumour toxicity in kidney by cluste
 
 # Results
 
-To quantify color profiles in immunohistochemistry data from healthy human kidney tissue samples in the Human Protein Atlas, we retrieved 9422 immunohistochemistry images for 3323 protein targets annotated to the following subcellular locations: plasma membrane, junction, or Focal adhesion sites. After removing the white background (and applying a simple contrast enhancement), we extracted image pixels from each image to produce a multidimensional fixed-bin color histogram for each image [@Weller2019]. To compare color palettes between images, the Earth Mover's distance was calculated between histograms to produce a distance matrix for agglomarative hierarchical clustering. 
+::: {.panel-tabset}
 
-For this baseline model, cluster uniformity was compared by ...
-
-For future iteration, use image model...
+To quantify colour profiles in immunohistochemistry data from healthy human kidney tissue samples in the Human Protein Atlas, we retrieved 9422 immunohistochemistry images for 3323 protein targets annotated to the following sub-cellular locations: plasma membrane, junction, or Focal adhesion sites. Kidney-specific proteins ("NPHS1", "SLC22A13", "SLC12A1", "AQP2") were included as positive [controls](https://www.proteinatlas.org/humanproteome/tissue/kidney). 
 
 
+## Summarising Colour
+
+After removing the white background (and applying a simple contrast enhancement), we extracted image pixels from each image to produce a multidimensional fixed-bin colour histogram for each image [@Weller2019]. To compare colour palettes between images, the Earth Mover's distance was calculated between histograms.
+
+The distance matrices were clustered using agglomerative hierarchical clustering. 
 
 
+```{r, fig.height=13, fig.width=32}
+#| label: fig-ihc_bp
+#| fig.showtext: TRUE
+#| fig-cap-location: bottom
+#| fig-cap: "A stacked barplot of staining intensity, ordered by proportion of pixels with a high staining intensity. Currently unfiltered so very large."
+
+targets::tar_load(ihc_bp)
+plot(ihc_bp)
+```
 
 ```{r, fig.height=32/2, fig.width=32/2}
 #| label: fig-img_dist
@@ -74,6 +86,47 @@ ComplexHeatmap::draw(
 
 
 ```
+
+
+## Summarising Visual Content
+
+A pre-trained Inception-V3 model was used to extract feature embeddings across all images, and Euclidean distance between embedding vectors calculated. The distance matrices were clustered using agglomerative hierarchical clustering. 
+
+```{r, fig.height=13, fig.width=32}
+#| label: fig-embed_dend
+#| fig.showtext: TRUE
+#| fig-cap-location: bottom
+#| fig-cap: "The first dimension of the PCA captures staining intensity related information. In the second plot, we cluster the Euclidian distance between antibodies. N.B. Whilst the clustering by target is encouraging, this may well be the result of a systematic batch effect that needs to be investigated further."
+
+targets::tar_load(pca_plt)
+plot(pca_plt)
+
+targets::tar_load(embed_dend)
+plot(embed_dend)
+
+```
+
+## Summary table
+
+
+```{r}
+targets::tar_load(ihc_tb)
+library(gt)
+library(gtExtras)
+ihc_tb |>
+  dplyr::mutate(prop = round(stain_proportion * 100)) |>
+  gt() |>
+  gtExtras::gt_theme_guardian() |>
+	gt::tab_source_note("Source: The Human Protein Atlas (v24.0); Wahl et al (2021)") |>
+  gtExtras::gt_plt_bar_pct(
+    column = prop,
+    scaled = TRUE,
+    fill = "#0097E5") |>
+  gt::opt_interactive()
+```
+
+
+:::
 
 # Methods
 

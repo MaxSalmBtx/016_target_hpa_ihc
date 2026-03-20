@@ -390,16 +390,20 @@ clean_img_transparent <- function(img_path, dest_dir = "../../input/hpa/ihc/"){
 	}
 }
 
-get_hist_dist <- function(x, y) {
 
-	# tar_load(image_hist_ls); x = image_hist_ls; tar_load(ensgids_paths); y = ensgids_paths
+get_hist_dist <- function(x, y, refs) {
+
+	# tar_load(image_hist_ls); x = image_hist_ls; tar_load(ensgids_paths); y = ensgids_paths; tar_load(references_ensgid); refs = references_ensgid
 	
 	# Aim: Average histograms by antibody, and then calculate earth mover distance between antibodies
 	
 	mappings <- 
 		y |>
 		dplyr::select(imageUrl, ENSGID, ab_id) |>
-		dplyr::mutate(file_n = basename(imageUrl))
+		dplyr::mutate(file_n = basename(imageUrl)) |>
+		tidyr::unnest(ENSGID) |>
+		dplyr::filter(ENSGID %in% refs$GENEID)
+		
 	### --- combineClusters at the antibody level ---		
 	ab_ids <- unique(mappings$ab_id)
 	out_ls <- vector("list", length(ab_ids))
@@ -414,9 +418,8 @@ get_hist_dist <- function(x, y) {
 			out_ls[[id]] <- 
 				colordistance::combineList(x[find_me], method = "mean")
 		}
-		
 	}
-	
+	### --- Calculate EMD ---
 	cdm <- 
 		colordistance::getColorDistanceMatrix(
 			Filter(Negate(is.null), out_ls), 
@@ -455,8 +458,42 @@ get_heatmap <- function(x, y, p, g, a) {
 		dplyr::mutate(highlight = gene %in% p$focus_targets) |>
 		dplyr::left_join(normal_annotations, by = c("ENSGID" = "ensembl"))
 
+	# Repair missing gene names
+	library(EnsDb.Hsapiens.v86)
+	missing_ensgid <- 
+		mappings |>
+		#dplyr::filter(is.na(gene)) |>
+		dplyr::pull(ENSGID) |>
+		unique()
+	output <- 
+		ensembldb::select(
+			EnsDb.Hsapiens.v86, 
+			keys = missing_ensgid, 
+			keytype = "GENEID", 
+			columns = c("GENEID", "SYMBOL")
+		) |>
+		dplyr::filter(grepl("ENSG", GENEID)) |>
+		dplyr::select(GENEID, SYMBOL) |>
+		dplyr::distinct()
+	mappings <- 
+		mappings |>
+		dplyr::left_join(output, by = c("ENSGID" = "GENEID"))
+	# --- New name vector ---
+	lookup <- 
+		mappings |>
+		dplyr::select(ab_id, SYMBOL, reliability) |>
+		dplyr::distinct() |>
+		tidyr::drop_na(SYMBOL) |>
+		tidyr::replace_na(list(reliability = "")) |>
+		dplyr::mutate(reliability = stringr::str_sub(reliability, 1, 1)) |>
+		dplyr::mutate(to = stringr::str_c(SYMBOL, reliability, ab_id, sep = "|")) |>
+		dplyr::select(ab_id, to)
+	lookup_v <- tibble::deframe(lookup)
+
 	## Extract matrix ---------------------------------------------------------
 	m <- x
+	rownames(m) <- dplyr::recode(rownames(m), !!!lookup_v)
+	colnames(m) <- dplyr::recode(colnames(m), !!!lookup_v)
 	
 	## --- Colours ------------------------------------------------------------
 	BTX_COL <- get_btx_palette()
@@ -466,7 +503,10 @@ get_heatmap <- function(x, y, p, g, a) {
 	cell_type <- unique(g$normal_tissue$cell_type)
 	cell_type <-
 		mappings |>
-		dplyr::select(ab_id, contains(cell_type))
+		dplyr::select(ab_id, contains(cell_type)) |>
+		dplyr::mutate(
+			ab_id = dplyr::recode(ab_id, !!!lookup_v)
+		)
 	cell_type <-
 		cell_type[match(colnames(m), cell_type$ab_id), ] |>
 		dplyr::select(!ab_id) |>
@@ -503,8 +543,8 @@ get_heatmap <- function(x, y, p, g, a) {
 
 	## --- Update names ---
 	# These are not unique, so need to keep antibody identifiers till end
-	colnames(m) <- mappings$gene[match(colnames(m), mappings$ab_id)]
-	rownames(m) <- mappings$gene[match(rownames(m), mappings$ab_id)]
+	# colnames(m) <- mappings$gene[match(colnames(m), mappings$ab_id)]
+	# rownames(m) <- mappings$gene[match(rownames(m), mappings$ab_id)]
 
 	fh = function(x) fastcluster::hclust(dist(x))
 	a_plt <-
@@ -541,15 +581,21 @@ get_heatmap <- function(x, y, p, g, a) {
 			show_column_names = TRUE
 		)
 
+	# ht <- draw(a_plt) 
+	# idx <- row_order(ht)
+	# rownames(m)[idx]
+
 	return(a_plt)
 }
 
 
-get_stacked_barplot <- function(x, y) {
+get_stacked_barplot <- function(x, y, refs) {
 
-	# tar_load(image_hist_ls); x = image_hist_ls; tar_load(ensgids_paths); y = ensgids_paths
+	# tar_load(image_hist_ls); x = image_hist_ls; tar_load(ensgids_paths); y = ensgids_paths; tar_load(references_ensgid); refs = references_ensgid
 	
 	# Aim: Average histograms by antibody, and then calculate earth mover distance between antibodies
+	
+	library(ggplot2)
 	
 	mappings <- 
 		y |>
@@ -569,22 +615,22 @@ get_stacked_barplot <- function(x, y) {
 			out_ls[[id]] <- 
 				colordistance::combineList(x[find_me], method = "mean")
 		}
-		
 	}
 	
     # Generate hex colors for each pixel
     lambda <- function(img) {
-		grDevices::rgb(
-			suppressMessages(
-				colordistance::convertColorSpace(
-					from = "Lab",
-					to = "sRGB", 
-					color.coordinate.matrix = img, 
-					sample.size = "all", 
-					from.ref.white = "D65"
+		rgb_cols <- 
+			grDevices::rgb(
+				suppressMessages(
+					colordistance::convertColorSpace(
+						from = "Lab",
+						to = "sRGB", 
+						color.coordinate.matrix = img, 
+						sample.size = "all", 
+						from.ref.white = "D65"
+					)
 				)
 			)
-		)
 		out <- 
 			img |>
 			dplyr::mutate(rgb_cols = rgb_cols) 
@@ -598,86 +644,491 @@ get_stacked_barplot <- function(x, y) {
 	to_plot <-
 		to_plot |>
 		dplyr::mutate(fill_key = interaction(antibody, rgb_cols))
-	
-	# Rank order by non-staining colour
-	od <- 
+
+	# Flip coordinates (Label: Target | Ab)
+	annot <- 
+		y |>
+		dplyr::select(ENSGID, ab_id) |>
+		tidyr::unnest(ENSGID) |>
+		dplyr::distinct() |>
+		dplyr::left_join(refs, by = c("ENSGID" = "GENEID")) |>
+		dplyr::select(ENSGID, SYMBOL, ab_id) |>
+		dplyr::distinct() |>
+		tidyr::drop_na(SYMBOL)
+	to_plot <- 
 		to_plot |>
-		dplyr::filter(rgb_cols == "#D8CCCD") |>
-		dplyr::arrange(Pct) |>
-		dplyr::pull(antibody)
+		dplyr::left_join(annot, by = c("antibody" = "ab_id")) |>
+		dplyr::mutate(lbl = 
+			ifelse(is.na(SYMBOL), "", SYMBOL)
+		)
+	
+	# Rank order by darkest/lightest colour (or weighted mean of L channel)
+	# library(rgl)
+	# with(to_plot, plot3d(L, a, b, type="s"))	
+	# plot(density(to_plot$L)) # trimodal pattern
+	if (FALSE) {
+		od <- 
+			to_plot |>
+			dplyr::filter(rgb_cols == "#D8CCCD") |> # fails if colour missing
+			dplyr::arrange(Pct) |>
+			dplyr::pull(antibody)	
+	}else{
+		# od <- 
+			# to_plot |>
+			# dplyr::group_by(antibody) |>
+			# # dplyr::summarise(
+				# # wm_l = weighted.mean(x = L, w = Pct),
+				# # wm_a = weighted.mean(x = a, w = Pct),
+				# # wm_b = weighted.mean(x = b, w = Pct)
+			# # ) |>
+			# # dplyr::mutate(wm = (wm_l + wm_a + wm_b)) |>
+			# dplyr::summarise(wm = weighted.mean(x = L, w = Pct)) |>
+			# dplyr::arrange(wm) |>
+			# dplyr::pull(antibody)	
+		
+		od <-
+			to_plot |>
+			dplyr::filter(L <= 30) |> # threshold from density plot
+			dplyr::group_by(antibody) |>
+			dplyr::summarise(wm = sum(Pct)) |>
+			dplyr::ungroup() |>
+			dplyr::arrange(wm) |>
+			dplyr::pull(antibody)	
+	}
+
 	to_plot <-
 		to_plot |>
-		dplyr::mutate(antibody = factor(antibody, levels = od))
+		dplyr::mutate(antibody = factor(antibody, levels = od)) 
+		#dplyr::filter(!is.na(SYMBOL))
 	
 	# IHC colors
-	color_palette <- setNames(to_plot$rgb_cols, to_plot$fill_key)
-	
-	# TODO: Flip coordinates (Label: Target | Ab)
-	# TODO: only label targets of interest
+	color_palette <- setNames(to_plot$rgb_cols, to_plot$fill_key)	
 	a_plot <- 
 		to_plot |>
-			ggplot(aes(fill = fill_key, y = Pct, x = antibody)) + 
+			ggplot(aes(fill = fill_key, y = Pct, x = antibody, label = lbl)) + 
 			geom_bar(position="stack", stat="identity")	+
 			scale_fill_manual(values = color_palette) +	
-			theme(legend.position = "none")	  
+			#scale_x_discrete(labels = function(x) ifelse(!is.na(x), x, "")) +
+			geom_text(y = 0) +
+			coord_flip() +
+			theme(
+				legend.position = "none", 
+				axis.title.x = element_text(size = 12),
+				axis.title.y = element_blank(), 
+				axis.text.y = element_blank(), 
+				axis.ticks.y = element_blank(), 
+				panel.grid.major.y = element_blank(), 
+				panel.grid.minor.y = element_blank()  
+			) 
+			
 	return(a_plot)
 }
 
+get_staining_tb <- function(x, y, refs) {
+
+	# tar_load(image_hist_ls); x = image_hist_ls; tar_load(ensgids_paths); y = ensgids_paths; tar_load(references_ensgid); refs = references_ensgid
+
+	library(EnsDb.Hsapiens.v86)		
+	library(gt)
+	library(gtExtras)
+
+	## --- HPA metadata ---
+	mappings <- 
+		y |>
+		dplyr::select(imageUrl, ENSGID, ab_id) |>
+		dplyr::mutate(file_n = basename(imageUrl)) |>
+		tidyr::unnest(ENSGID)
+	## --- Add gene names ---
+	missing_ensgid <- 
+		mappings |>
+		dplyr::pull(ENSGID) |>
+		unlist() |>
+		unique()
+	output <- 
+		ensembldb::select(
+			EnsDb.Hsapiens.v86, 
+			keys = missing_ensgid, 
+			keytype = "GENEID", 
+			columns = c("GENEID", "SYMBOL")
+		) |>
+		dplyr::filter(grepl("ENSG", GENEID)) |>
+		dplyr::select(GENEID, SYMBOL) |>
+		dplyr::distinct()
+	mappings <- 
+		mappings |>
+		dplyr::left_join(output, by = c("ENSGID" = "GENEID"))
+
+	### --- combineClusters at the antibody level ---		
+	ab_ids <- unique(mappings$ab_id)
+	out_ls <- vector("list", length(ab_ids))
+	names(out_ls) <- ab_ids
+	for (id in ab_ids) {
+		find_me <-
+			mappings |>
+			dplyr::filter(ab_id == id) |>
+			dplyr::pull(file_n)
+		test <- all(unlist(lapply(X = x[find_me], FUN = is.null)))
+		if (!test) {
+			out_ls[[id]] <- 
+				colordistance::combineList(x[find_me], method = "mean")
+		}
+	}
+	
+	to_plot <-
+		out_ls |>
+		dplyr::bind_rows(.id = "antibody")
+
+	# Rank order by darkest/lightest colour (or weighted mean of L channel)
+	to_plot <-
+		to_plot |>
+		dplyr::filter(L <= 30) |> # threshold from density plot
+		dplyr::group_by(antibody) |>
+		dplyr::summarise(stain_proportion = sum(Pct)) |>
+		dplyr::ungroup() |>
+		dplyr::arrange(desc(stain_proportion))
+	annot <- 
+		mappings |>
+		dplyr::select(SYMBOL, ENSGID, ab_id) |>
+		dplyr::distinct() |>
+		dplyr::mutate(is_bcy = ENSGID %in% refs$GENEID)
+	to_plot <- 
+		to_plot |>
+		dplyr::left_join(annot, by = c("antibody" = "ab_id")) 
+	
+	return(to_plot)
+}
+
+
+
+get_torch_embedding <- function(x, efficientnet = FALSE) {
+
+	# --- Load libraries ---
+	library(magick)
+	library(torch)
+	library(torchvision)
+
+	# --- Set the device to CPU ---
+	device <- torch_device("cpu")
+	# --- A pretrained EfficientNet-V2-S encoder to extract feature embeddings
+	# model <- models_resnet18(pretrained = TRUE)
+	# model <- torchvision::model_mobilenet_v3_large(pretrained = TRUE) # fast
+	if(efficientnet) {
+		model <- torchvision::model_efficientnet_v2_s(pretrained = TRUE) 
+		img_size <- 224
+	}else{
+		model <- model_inception_v3(pretrained = TRUE) 
+		img_size <- 299 
+	}
+	
+	
+	# --- Remove the final classification layer (fc) to get embeddings
+	model$fc <- nn_identity()
+	# --- Move the model to the CPU and set it to evaluation mode
+	model$to(device = device)
+	model$eval()
+	# --- Load the image ---
+	img <- magick::image_read(x)
+	# --- Preprocess the image ---
+	input <- 
+		img |>
+			# Convert the image to a tensor
+			torchvision::transform_to_tensor() |>
+			# Resize to the expected input size of the model 
+			torchvision::transform_resize(size = c(img_size, img_size)) |>
+			# Normalize with the mean and standard deviation of ImageNet 
+			torchvision::transform_normalize(mean = c(0.485, 0.456, 0.406), std = c(0.229, 0.224, 0.225)) 
+	# Add a batch dimension
+	img_tensor <- input$unsqueeze(1)
+	# Generate the embedding (no gradient calculation needed)
+	torch::with_no_grad({
+		embedding <- 
+			model(img_tensor$to(device = device))
+	})
+	# Store the embedding (move it back to the CPU if it were on a GPU)
+	out <- as.array(embedding$cpu())
+	rownames(out) <- basename(x)	
+	return(out)
+}
+
+filter_torch_embeddings <- function(x, y, refs) {
+	# tar_load(img_embed_ls); x = img_embed_ls; tar_load(ensgids_paths); y = ensgids_paths; tar_load(references_ensgid); refs = references_ensgid
+
+	mappings <- 
+		y |>
+		dplyr::select(imageUrl, ENSGID, ab_id) |>
+		dplyr::mutate(file_n = basename(imageUrl)) |>
+		tidyr::unnest(ENSGID) |>
+		dplyr::filter(ENSGID %in% refs$GENEID)
+	
+	### --- Repair row names ---
+	tmp <- rownames(x)
+	pattern <- "^img_embed_ls_[a-f0-9]{16}_"
+	output_strings <- stringr::str_remove(tmp, pattern)
+	
+	### --- combine embeddings at the antibody level ---
+	ab_ids <- unique(mappings$ab_id)
+	out_ls <- vector("list", length(ab_ids))
+	names(out_ls) <- ab_ids
+	for (id in ab_ids) {
+		find_me <-
+			mappings |>
+			dplyr::filter(ab_id == id) |>
+			dplyr::pull(file_n)		
+		idx <- which(output_strings %in% find_me)
+		
+		if (length(idx) > 0) {
+			out_ls[[id]] <- as.vector(colMeans(x[idx, ]))
+		}
+	}
+
+	out_tb <-
+		out_ls |>
+		dplyr::bind_rows(.id = "ab_id") 
+	return(out_tb)
+
+}
+
+calculate_single_dist <- function(pair_indices, x) {
+	item1_index <- pair_indices[1]
+	item2_index <- pair_indices[2]
+	# Extract the data for the two items
+	a <- x[, item1_index]
+	b <- x[, item2_index]
+	# Calculate EMD distance: constant bugs
+	# distance <- transport::wasserstein1d(a, b, p = 1) # EMD
+	# distance <- transport::wasserstein1d(a, b, p = 1) # EMD
+	# Euclidian dist (or cosine similarity)
+	distance <- dist(t(x[, c(item1_index, item2_index)]))
+	out <- 
+		tibble::tibble(
+			indx_1 = colnames(x)[item1_index],
+			indx_2 = colnames(x)[item2_index],
+			euc_dist = as.numeric(distance)	
+		)
+	return(out)
+}
+
+
+cluster_embeddings <- function(x, y, p, g) {
+	
+	# ABORTED: The clusters do not reflect the images in a meaningful way
+	# Zero distances in the hieracrchical clustering... artefacts?
+	
+	# tar_load(final_distance_table); x = final_distance_table; tar_load(ensgids_paths); y = ensgids_paths; tar_load(param_ls); p = param_ls; tar_load(hpa_overview_ls); g = hpa_overview_ls; 
+	
+	library(tidyr)
+	library(dplyr)
+	library(ggplot2)
+	library(ggalign)
+	library(ggdendro)
+
+	# Note cell_type annotation is at gene level, not antibody level
+	# This means the heatmap may flag anitbodies within a protein target that do not align with the single label (in heatmap). On website, annotations are better, but not programatically accesible.
+	normal_annotations <-
+		g$normal_tissue |> 
+		dplyr::filter(tissue == "Kidney") |>
+		dplyr::mutate(level = na_if(level, "N/A")) |>
+		dplyr::mutate(level = factor(level, levels = c("Not representative", "Not detected", "Descending", "Ascending", "Low", "Medium", "High"))) |>
+		dplyr::group_by(ensembl) |>
+		tidyr::pivot_wider(names_from = cell_type, values_from = level) |>
+		dplyr::select(!gene:reliability)
+
+	mappings <- 
+		y |>
+		dplyr::select(ENSGID, ab_id) |>
+		tidyr::unnest_longer(ENSGID) |>
+		dplyr::distinct() |>
+		dplyr::left_join(g$subcellular_location, by = c("ENSGID" = "ensembl")) |>
+		dplyr::mutate(highlight = gene %in% p$focus_targets) |>
+		dplyr::left_join(normal_annotations, by = c("ENSGID" = "ensembl")) |>
+		tidyr::replace_na(list(gene = "", reliability = ""))
+
+	lookup <- 
+		mappings |>
+		dplyr::select(ab_id, gene, reliability) |>
+		dplyr::mutate(reliability = stringr::str_sub(reliability, 1, 1)) |>
+		dplyr::mutate(to = stringr::str_c(gene, reliability, ab_id, sep = "|")) |>
+		dplyr::select(ab_id, to)
+	lookup_v <- tibble::deframe(lookup)
+
+	## Extract matrix ---------------------------------------------------------
+	# To create a symmetric matrix, we need to add the reverse pairs
+	# and the zero-distance diagonals.
+	all_items <- unique(c(x$indx_1, x$indx_2))
+	full_distances <- 
+		x |>
+		# Add the reverse pairs (e.g., B-A if we have A-B)
+		dplyr::bind_rows(x |> rename(indx_1 = indx_2, indx_2 = indx_1)) |>
+		# Add the zero-distance diagonals (e.g., A-A)
+		dplyr::bind_rows(tibble(indx_1 = all_items, indx_2 = all_items, euc_dist = 0)) |>
+		# Ensure there are no duplicates
+		dplyr::distinct() |>
+		tidyr::drop_na(indx_1)
+
+	## Update names
+	full_distances <- 
+		full_distances |>
+		dplyr::mutate(
+			indx_1 = dplyr::recode(indx_1, !!!lookup_v)
+		) |>
+		dplyr::mutate(
+			indx_2 = dplyr::recode(indx_2, !!!lookup_v)
+		)	
+
+	# 2. Reshape the data from long to a wide matrix format
+	distance_matrix <- 
+		full_distances |>
+		tidyr::pivot_wider(
+			names_from = indx_2,
+			values_from = euc_dist
+		) |>
+		tibble::column_to_rownames("indx_1")
+
+	# 3. Convert the square matrix to a 'dist' object
+	# Up to this point, manul verified data transforms.
+	# `hclust` requires this specific object class.
+	dist_object <- as.dist(as.matrix(distance_matrix))
+
+	# 4. Run hclust 
+	hc <- hclust(dist_object, method = "complete")
+	dendro_plot <- 
+		ggdendrogram(hc, rotate = TRUE, leaf_labels = FALSE)
+
+	# --- plot the annotated dendrogram ---
+	# The order of samples in the heatmap must match the order in the dendrogram
+	tmp <- hc$labels[hc$order]
+	# Kidney architecture staining
+	cell_type <- unique(g$normal_tissue$cell_type)
+	cell_type <-
+		mappings |>
+		dplyr::select(ab_id, contains(cell_type)) |>
+		dplyr::mutate(
+			ab_id = dplyr::recode(ab_id, !!!lookup_v)
+		)	
+	cell_type <-
+		cell_type[match(tmp, cell_type$ab_id), ] |>
+		dplyr::mutate(ab_id = factor(ab_id, levels = tmp)) |>
+		tidyr::pivot_longer(!ab_id, names_to = "compartment", values_to = "intensity")
+	tealrose_heatmap <- as.character(paletteer::paletteer_c(palette = "grDevices::TealRose", direction = 1, n = 4))
+	names(tealrose_heatmap) <- c("Not detected", "Low", "Medium", "High")
+	heatmap_plot <- 
+		cell_type |>
+		ggplot(aes(y = ab_id, x = compartment, fill = intensity)) +
+		geom_tile() +
+		scale_fill_manual(values = tealrose_heatmap) +
+		theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) 
+
+	# --- Create the Dendrogram Plot ---
+	library(patchwork)
+	a_plot <- 
+		heatmap_plot + dendro_plot
+		plot_layout(widths = c(1, 4)) # Make the dendrogram 1/4 the width of the heatmap
+	return(a_plot)
+}
+
+pca_embeddings <- function(x, y, refs, z) {
+
+	# tar_load(img_embed_ls); x = img_embed_ls; tar_load(ensgids_paths); y = ensgids_paths; tar_load(references_ensgid); refs = references_ensgid;  tar_load(image_hist_ls); z = image_hist_ls;
+
+	mappings <- 
+		y |>
+		dplyr::select(imageUrl, ENSGID, ab_id) |>
+		dplyr::mutate(file_n = basename(imageUrl)) |>
+		tidyr::unnest(ENSGID) 
+
+	# Repair missing gene names
+	library(EnsDb.Hsapiens.v86)
+	missing_ensgid <- 
+		mappings |>
+		#dplyr::filter(is.na(gene)) |>
+		dplyr::pull(ENSGID) |>
+		unique()
+	output <- 
+		ensembldb::select(
+			EnsDb.Hsapiens.v86, 
+			keys = missing_ensgid, 
+			keytype = "GENEID", 
+			columns = c("GENEID", "SYMBOL")
+		) |>
+		dplyr::filter(grepl("ENSG", GENEID)) |>
+		dplyr::select(GENEID, SYMBOL) |>
+		dplyr::distinct()
+	mappings <- 
+		mappings |>
+		dplyr::left_join(output, by = c("ENSGID" = "GENEID"))
+	
+	### --- Update row names ---
+	tmp <- rownames(x)
+	pattern <- "^img_embed_ls_[a-f0-9]{16}_"
+	output_strings <- stringr::str_remove(tmp, pattern)
+	rownames(x) <- output_strings
+	
+	### --- Remove duplicate row names ---
+	idx <- which(duplicated(rownames(x)))
+	y <- x[-idx, ]
+
+	### --- Colour annotations ---
+	colour_bins <-
+		z |>
+		dplyr::bind_rows(.id = "file_n")
+	colour_annot <-
+		colour_bins |>
+		dplyr::filter(L <= 30) |> # threshold from density plot
+		dplyr::group_by(file_n) |>
+		dplyr::summarise(wm = sum(Pct)) |>
+		dplyr::ungroup() |>
+		dplyr::arrange(wm) 	
+	mappings <- 
+		mappings |>
+		dplyr::left_join(colour_annot, by = "file_n")
+		
+	### --- PCA ---
+	library(factoextra)
+	pca_res <- prcomp(y, scale = TRUE)
+	# fviz_pca_ind(pca_res,
+				 # col.ind = "cos2", # Color by the quality of representation
+				 # select.ind = list(cos2 = 40),
+				 # gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+				 # repel = TRUE     # Avoid text overlapping
+				 # )
+	to_plot <- 
+		as.data.frame(pca_res$x[, 1:20]) |>
+		tibble::rownames_to_column() |>
+		dplyr::left_join(mappings, by = c("rowname" = "file_n")) |>
+		dplyr::mutate(lbl = ifelse(SYMBOL %in% refs$SYMBOL, SYMBOL, "")) 
+
+	a_plot <- 
+		to_plot |>
+		ggplot(aes(x = PC1, y = PC2, fill = wm, color = wm, label = lbl)) +
+		geom_point(alpha = 0.5, shape = 21) +
+		ggrepel::geom_text_repel(max.overlaps = Inf)
+	
+	# to_plot |>	
+		# corrr::correlate() |>
+		# corrr::shave() |>
+		# corrr::fashion() # Shows that PC1 has detected the staining intensity
+	b_plot <- 
+		to_plot |>
+		ggplot(aes(x = PC1, y = wm, fill = wm, color = wm, label = lbl)) +
+		geom_point(alpha = 0.5, shape = 21) + 
+		scale_y_sqrt() +
+		paletteer::scale_color_paletteer_c("harrypotter::ravenclaw2") +
+		paletteer::scale_fill_paletteer_c("harrypotter::ravenclaw2") +
+		labs(x = "PC1", y = "Staining intensity (pixel proportion)", fill = NULL, color = NULL, caption = "Data: HPA, healthy kidney") +
+		theme(legend.position = "none")
+		
+	return(b_plot)
+
+}
 
 
 
 ###############################################################################
 # Experiments
 
-# Define the image transformations
-preprocess <- function(img) {
-  img |>
-    # Convert the image to a tensor
-    transform_to_tensor() |>
-    # Resize to the expected input size of the model (e.g., 224x224 for ResNet)
-    transform_resize(size = c(224, 224)) |>
-    # Normalize with the mean and standard deviation of the ImageNet dataset
-    transform_normalize(mean = c(0.485, 0.456, 0.406), std = c(0.229, 0.224, 0.225)) |>
-    # Add a batch dimension
-    `$`unsqueeze(1)
-}
 
-
-get_torch <- function() {
-
-	library(torch)
-	library(torchvision)
-
-	# Set the device to CPU
-	device <- torch_device("cpu")
-	# Load a pre-trained ResNet-18 model
-	model <- models_resnet18(pretrained = TRUE)
-	# Remove the final classification layer (fc) to get embeddings
-	model$fc <- nn_identity()
-	# Move the model to the CPU and set it to evaluation mode
-	model$to(device = device)
-	model$eval()
-	# Example list of image file paths
-	image_files <- list.files("./tmp/", full.names = TRUE, pattern = "\\.jpg$|\\.png$")
-	# A list to store the embeddings
-	embeddings_list <- list()
-	# Loop through each image file
-	for (file_path in image_files) {
-	  # Load the image
-	  img <- magick::image_read(file_path)
-	  # Preprocess the image
-	  img_tensor <- preprocess(img)
-	  # Generate the embedding (no gradient calculation needed)
-	  with_no_grad({
-		embedding <- model(img_tensor$to(device = device))
-	  })
-	  # Store the embedding (move it back to the CPU if it were on a GPU)
-	  embeddings_list[[file_path]] <- as.array(embedding$cpu())
-	}
-	# Combine all embeddings into a single matrix
-	embeddings_matrix <- do.call(rbind, embeddings_list)
-
-
+get_tangleogram <- function() {
+	# https://r-graph-gallery.com/340-custom-your-dendrogram-with-dendextend.html
 
 }
 
@@ -798,40 +1249,6 @@ get_hpa_healthy_img <- function(x) {
 }
 
 
-sort_hpa_healthy_img <- function(x, y) {
-
-	# TODO: PLot stacked barplots for each IHC image
-	# Return Gini 
-
-	# tar_load(hpa_ihc_hist_ls); x = hpa_ihc_hist_ls; tar_load(hpa_ihc_url_tb); y = hpa_ihc_url_tb
-	for(i in 1:length(x)) {
-	
-		to_plot <-
-			x[[i]] |> 
-			dplyr::rowwise() |>
-			dplyr::mutate(hex = hsv(h = h, s = s, v = v)) |>
-			dplyr::ungroup() |>
-			dplyr::arrange(h, s, v) |>
-			dplyr::mutate(bin = as.character(row_number()))
-	
-		colour_mapping <- setNames(unique(to_plot$hex), unique(to_plot$bin))
-		
-		# TODO: add in all associated metadata for original IHC image
-		
-		a_plot <-
-			to_plot |>
-			ggplot2::ggplot(aes(fill = bin, y = Pct, x = '')) + 
-			geom_bar(position = "stack", stat = "identity") +
-			scale_fill_manual(values = colour_mapping) +
-			guides(fill = "none") +
-			theme_bw() 
-		gini <- DescTools::Gini(to_plot$Pct, na.rm = TRUE)
-	
-	}
-	
-
-}
-
 
 plot_ihc_montage <- function(y, p, metadata, target) {
 
@@ -892,40 +1309,4 @@ plot_ihc_montage <- function(y, p, metadata, target) {
 	magick::image_write(montage, path = glue::glue("IMG/tma_healthy_{target}.pdf"), format = "pdf")
 
 }
-
-get_ihc_fet <- function(y, metadata, target) {
-
-	## This function will apply Fishers Exact Test to contingency table of HPA IHC image annotations for a target 
-
-	# target = "ST14"; metadata = all_targets; tar_load(hpa_ihc_url_tb); y = hpa_ihc_url_tb	
-	# Load IHC images for a specific Antibody
-	# Annotate images: for tumour, use a coloured border or a symbol (L-H|W-S|%)
-	# Tile into a montage (sort by pct brown)
-
-	ensgid <- 
-		metadata |>
-		dplyr::filter(SYMBOL == target) |>
-		dplyr::pull(ENSGID)
-
-	filepath_ls <- 
-		y |>
-		dplyr::filter(ENSGID %in% ensgid) |>
-		dplyr::filter(snomedCode1 != "M-00100") |> # filter out all 'Normal tissue'
-		dplyr::arrange(snomedCode1, snomedCode2, snomedCode3) |>
-		dplyr::mutate(label = tissueDescription2) |>
-		dplyr::mutate(staining = factor(staining, levels = c("Not detected", "Low", "Medium", "High"))) |>
-		dplyr::mutate(intensity = factor(intensity, levels = c("Negative", "Weak", "Moderate", "Strong")))
-	
-	# --- Summarise annotation data ---
-	# For tumour data, create contingency tables of staining x intensity per indication -> mosaic plot, suitable for Fishers Exact Test
-	# TODO: compare global to local (indication-specific) table
-	global_tb <- 
-		filepath_ls |>
-		# dplyr::group_by(tissueDescription1, tissueDescription2) |>
-		dplyr::count(staining, intensity) |>
-		tidyr::pivot_wider(names_from = intensity, values_from = n)
-
-
-}
-
 

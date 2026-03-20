@@ -1,6 +1,6 @@
 {
 	"NPERM" : 1, 
-	"references" : ["ERBB2", "MET", "EGFR",  "TACSTD2", "CD47", "CD276", "MSLN", "DLL3", "CLDN18", "TPBG", "FOLH1", "SSTR2", "FAP", "NECTIN4", "CEACAM5", "MMP14", "DDR1", "ST14", "ITGA3"],
+	"references" : ["ERBB2", "MET", "EGFR",  "TACSTD2", "CD47", "CD276", "MSLN", "DLL3", "CLDN18", "TPBG", "FOLH1", "SSTR2", "FAP", "NECTIN4", "CEACAM5", "MMP14", "DDR1", "ST14", "ITGA3", "NPHS1", "SLC22A13", "SLC12A1", "AQP2"],
 	"core_tissue": ["Heart", "Kidney", "Lung", "Skin"],
 	"focus_targets": ["DDR1", "ITGA3", "ST14", "NECTIN4", "MMP14", "EPHA2", "CEACAM5"]
 }
